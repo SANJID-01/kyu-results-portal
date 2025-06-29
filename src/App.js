@@ -6,7 +6,7 @@ import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
   signOut,
-} from "firebase/auth"; // Removed signInWithCustomToken
+} from "firebase/auth";
 import {
   getFirestore,
   collection,
@@ -20,13 +20,13 @@ import {
 // IMPORTANT: Paste YOUR ACTUAL Firebase project config JSON here.
 // Get this from Firebase Console -> Project settings -> Your apps -> Web app -> Config
 const firebaseConfig = {
-  apiKey: "AIzaSyAbVWMbQaRktuNbEs39oqK_fLW01IwZcYg", // Replace with your Firebase API Key
-  authDomain: "kyau-results-live.firebaseapp.com", // Replace with your Firebase Auth Domain
-  projectId: "kyau-results-live", // Replace with your Firebase Project ID
-  storageBucket: "kyau-results-live.firebasestorage.app", // Replace with your Firebase Storage Bucket
-  messagingSenderId: "662960795243", // Replace with your Firebase Messaging Sender ID
-  appId: "1:662960795243:web:0f8705c2cbd6c89ac64b2e", // Replace with your Firebase App ID
-  measurementId: "G-V785DV14BC", // Optional, keep if present in your config
+  apiKey: "AIzaSyAbVWMbQaRktuNbEs39oqK_fLW01IwZcYg",
+  authDomain: "kyau-results-live.firebaseapp.com",
+  projectId: "kyau-results-live",
+  storageBucket: "kyau-results-live.firebasestorage.app",
+  messagingSenderId: "662960795243",
+  appId: "1:662960795243:web:0f8705c2cbd6c89ac64b2e",
+  measurementId: "G-V785DV14BC",
 };
 
 // Initialize Firebase App
@@ -47,8 +47,8 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [authReady, setAuthReady] = useState(false);
-  const [userId, setUserId] = useState(null); // User's Firebase UID
-  const [isAdmin, setIsAdmin] = useState(false); // True if logged in as ADMIN_EMAIL
+  const [userId, setUserId] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   // Admin Login/Logout States
   const [showAdminLoginModal, setShowAdminLoginModal] = useState(false);
@@ -59,8 +59,8 @@ const App = () => {
   // States for Data Management Modals
   const [showImportCSVModal, setShowImportCSVModal] = useState(false);
   const [showManualAddModal, setShowManualAddModal] = useState(false);
-  const [selectedFile, setSelectedFile] = useState(null); // State for selected CSV file
-  const fileInputRef = useRef(null); // Ref to clear file input field
+  const [selectedFile, setSelectedFile] = useState(null);
+  const fileInputRef = useRef(null);
 
   // State for Manual Student Data Entry
   const [manualStudentData, setManualStudentData] = useState({
@@ -75,35 +75,42 @@ const App = () => {
 
   // Effect for Firebase Authentication State Changes
   useEffect(() => {
-    // onAuthStateChanged listens for user login/logout events
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         setUserId(user.uid);
-        // Check if the authenticated user's email matches the hardcoded ADMIN_EMAIL
-        setIsAdmin(user.email === ADMIN_EMAIL);
+        // Set isAdmin based on user.email only if user.email is available
+        setIsAdmin(user.email ? user.email === ADMIN_EMAIL : false);
       } else {
-        // If no user is authenticated (e.g., after logout or initial load),
-        // sign in anonymously to allow public data reads (student searches).
-        try {
-          await signInAnonymously(auth);
-          setUserId(auth.currentUser?.uid || crypto.randomUUID()); // Set a unique ID even for anonymous
-          setIsAdmin(false); // Not an admin if signed in anonymously
-        } catch (authError) {
-          console.error("Firebase anonymous authentication error:", authError);
-          setError("Failed to initialize authentication. Please try again.");
+        // If no user, try to sign in anonymously if not already signed in
+        if (!auth.currentUser) {
+          // Check if there's no current user at all
+          try {
+            await signInAnonymously(auth);
+            setUserId(auth.currentUser?.uid || null);
+            setIsAdmin(false);
+          } catch (authError) {
+            console.error(
+              "Firebase anonymous authentication error:",
+              authError
+            );
+            setError("Failed to initialize authentication. Please try again.");
+          }
+        } else {
+          // There is a user, but it's not the one we want (e.g., just logged out)
+          setUserId(null);
+          setIsAdmin(false);
         }
       }
-      setAuthReady(true); // Firebase auth state is now known
+      setAuthReady(true);
     });
 
-    // Cleanup function: unsubscribe from the listener when component unmounts
     return () => unsubscribe();
-  }, []); // Empty dependency array means this effect runs once on component mount
+  }, []);
 
   // Function to determine remarks based on CGPA and grades
   const getRemarksByCGPA = (cgpa, courseResults) => {
     const cgpaValue = parseFloat(cgpa);
-    if (isNaN(cgpaValue)) return "N/A"; // If CGPA is not a number or invalid
+    if (isNaN(cgpaValue)) return "N/A";
 
     // Check for explicit 'F' or 'Absent' grades in course results
     const hasFailingGrade = courseResults.some(
@@ -115,7 +122,7 @@ const App = () => {
     );
 
     if (hasFailingGrade) {
-      return "Needs Improvement (Failing grade or Absent)"; // Override CGPA remark if failing grades exist
+      return "Needs Improvement (Failing grade or Absent)";
     }
 
     // Determine remark based on CGPA thresholds
@@ -134,18 +141,16 @@ const App = () => {
 
   // Function to handle student result search
   const searchResults = async (e) => {
-    e.preventDefault(); // Prevent default form submission
+    e.preventDefault();
     if (!authReady) {
-      // Ensure Firebase auth is initialized before proceeding
       setError("Authentication not ready. Please wait.");
       return;
     }
-    setLoading(true); // Set loading state
-    setResults(null); // Clear previous results
-    setError(""); // Clear previous errors
+    setLoading(true);
+    setResults(null);
+    setError("");
 
     if (!studentIdInput.trim()) {
-      // Validate input
       setError("Please enter a Student ID.");
       setLoading(false);
       return;
@@ -181,7 +186,7 @@ const App = () => {
       console.error("Error fetching documents: ", e);
       setError("Error fetching results. Please try again later. " + e.message);
     } finally {
-      setLoading(false); // Reset loading state
+      setLoading(false);
     }
   };
 
@@ -473,8 +478,8 @@ const App = () => {
       } else {
         // If login successful but email doesn't match ADMIN_EMAIL (shouldn't happen with correct setup)
         setLoginError("Invalid admin credentials.");
-        await signOut(auth);
-        await signInAnonymously(auth);
+        // Do NOT automatically sign out here if it's just an email mismatch after a successful Firebase login.
+        // Let the subsequent anonymous sign-in handle the public view.
         setIsAdmin(false);
       }
     } catch (error) {
@@ -492,8 +497,8 @@ const App = () => {
       }
       // Ensure anonymous sign-in is attempted if admin login fails
       try {
-        await signOut(auth);
-        await signInAnonymously(auth);
+        await signOut(auth); // Sign out any partial or failed auth attempt
+        await signInAnonymously(auth); // Re-authenticate anonymously for public view
       } catch (anonError) {
         console.error("Failed to re-authenticate anonymously:", anonError);
       }
@@ -800,7 +805,7 @@ const App = () => {
                 )}
               </button>
               <button
-                type="button" // Important: set type="button" to prevent form submission
+                type="button"
                 onClick={() => {
                   setShowImportCSVModal(false);
                   setSelectedFile(null);
@@ -1097,13 +1102,6 @@ const App = () => {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
-
-      {/* Current User ID / Debugging Info */}
-      {userId && (
-        <div className="absolute bottom-4 right-4 text-xs text-blue-200 bg-white bg-opacity-10 p-2 rounded-lg">
-          Your User ID: <span className="font-mono">{userId}</span>
         </div>
       )}
     </div>
