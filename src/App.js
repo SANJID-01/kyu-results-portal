@@ -3,9 +3,10 @@ import { initializeApp } from "firebase/app";
 import {
   getAuth,
   signInAnonymously,
-  signInWithCustomToken,
   onAuthStateChanged,
-} from "firebase/auth";
+  signInWithEmailAndPassword,
+  signOut,
+} from "firebase/auth"; // Removed signInWithCustomToken
 import {
   getFirestore,
   collection,
@@ -16,31 +17,28 @@ import {
   setDoc,
 } from "firebase/firestore";
 
-// Global variables (adjusted for local build/deployment outside Canvas)
-// These are not defined globally in a regular React app, so we provide default/placeholder values.
-const appId = "default-university-app"; // Use a default app ID for local builds
-// IMPORTANT: Replace this firebaseConfig with YOUR ACTUAL Firebase project config JSON.
+// IMPORTANT: Paste YOUR ACTUAL Firebase project config JSON here.
 // Get this from Firebase Console -> Project settings -> Your apps -> Web app -> Config
 const firebaseConfig = {
-  apiKey: "", // Replace with your Firebase API Key
-  authDomain: "", // Replace with your Firebase Auth Domain
-  projectId: "", // Replace with your Firebase Project ID
-  storageBucket: "", // Replace with your Firebase Storage Bucket
-  messagingSenderId: "", // Replace with your Firebase Messaging Sender ID
-  appId: "", // Replace with your Firebase App ID
+  apiKey: "AIzaSyAbVWMbQaRktuNbEs39oqK_fLW01IwZcYg", // Replace with your Firebase API Key
+  authDomain: "kyau-results-live.firebaseapp.com", // Replace with your Firebase Auth Domain
+  projectId: "kyau-results-live", // Replace with your Firebase Project ID
+  storageBucket: "kyau-results-live.firebasestorage.app", // Replace with your Firebase Storage Bucket
+  messagingSenderId: "662960795243", // Replace with your Firebase Messaging Sender ID
+  appId: "1:662960795243:web:0f8705c2cbd6c89ac64b2e", // Replace with your Firebase App ID
+  measurementId: "G-V785DV14BC", // Optional, keep if present in your config
 };
-const initialAuthToken = null; // This token is specific to Canvas environment, so use null locally
 
 // Initialize Firebase App
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// IMPORTANT: REPLACE 'YOUR_ADMIN_FIREBASE_UID_HERE' with your actual Firebase User ID.
-// You can find your User ID at the bottom right corner of the running app in Canvas.
-// If you have multiple admins, add their UIDs to this array.
-const adminUids = [""]; // Initialize with empty string, user will replace
-// Example: const adminUids = ['AbCdEfGhIjKlMnOpQrStUvWxFyZaBcDe', 'AnotherAdminUID12345'];
+// Get the projectId from the firebaseConfig for consistency in Firestore paths
+const currentAppId = firebaseConfig.projectId;
+
+// IMPORTANT: REPLACE THIS WITH THE EXACT EMAIL OF YOUR ADMIN USER CREATED IN FIREBASE AUTHENTICATION
+const ADMIN_EMAIL = "your_admin_email@example.com"; // <-- !! REPLACE THIS EMAIL !!
 
 // Main App Component
 const App = () => {
@@ -49,67 +47,78 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [authReady, setAuthReady] = useState(false);
-  const [userId, setUserId] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false); // New state for admin status
+  const [userId, setUserId] = useState(null); // User's Firebase UID
+  const [isAdmin, setIsAdmin] = useState(false); // True if logged in as ADMIN_EMAIL
 
-  // States for Modals
+  // Admin Login/Logout States
+  const [showAdminLoginModal, setShowAdminLoginModal] = useState(false);
+  const [adminEmail, setAdminEmail] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+
+  // States for Data Management Modals
   const [showImportCSVModal, setShowImportCSVModal] = useState(false);
   const [showManualAddModal, setShowManualAddModal] = useState(false);
-  const [selectedFile, setSelectedFile] = useState(null); // New state for selected file
-  const fileInputRef = useRef(null); // Ref to clear file input
+  const [selectedFile, setSelectedFile] = useState(null); // State for selected CSV file
+  const fileInputRef = useRef(null); // Ref to clear file input field
+
+  // State for Manual Student Data Entry
   const [manualStudentData, setManualStudentData] = useState({
     studentId: "",
     name: "",
     department: "",
     session: "",
+    batch: "",
     cgpa: "",
     courseResults: [{ courseCode: "", grade: "" }],
   });
 
-  // Auth and Firestore Initialization
+  // Effect for Firebase Authentication State Changes
   useEffect(() => {
+    // onAuthStateChanged listens for user login/logout events
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         setUserId(user.uid);
-        // Check if the current user is an admin
-        setIsAdmin(adminUids.includes(user.uid));
+        // Check if the authenticated user's email matches the hardcoded ADMIN_EMAIL
+        setIsAdmin(user.email === ADMIN_EMAIL);
       } else {
+        // If no user is authenticated (e.g., after logout or initial load),
+        // sign in anonymously to allow public data reads (student searches).
         try {
-          if (initialAuthToken) {
-            await signInWithCustomToken(auth, initialAuthToken);
-          } else {
-            await signInAnonymously(auth);
-          }
-          const currentUid = auth.currentUser?.uid || crypto.randomUUID();
-          setUserId(currentUid);
-          setIsAdmin(adminUids.includes(currentUid)); // Check admin status after sign-in
+          await signInAnonymously(auth);
+          setUserId(auth.currentUser?.uid || crypto.randomUUID()); // Set a unique ID even for anonymous
+          setIsAdmin(false); // Not an admin if signed in anonymously
         } catch (authError) {
-          console.error("Firebase authentication error:", authError);
-          setError("Failed to authenticate. Please try again.");
+          console.error("Firebase anonymous authentication error:", authError);
+          setError("Failed to initialize authentication. Please try again.");
         }
       }
-      setAuthReady(true);
+      setAuthReady(true); // Firebase auth state is now known
     });
 
+    // Cleanup function: unsubscribe from the listener when component unmounts
     return () => unsubscribe();
-  }, []);
+  }, []); // Empty dependency array means this effect runs once on component mount
 
   // Function to determine remarks based on CGPA and grades
   const getRemarksByCGPA = (cgpa, courseResults) => {
     const cgpaValue = parseFloat(cgpa);
-    if (isNaN(cgpaValue)) return "N/A"; // If CGPA is not a number
+    if (isNaN(cgpaValue)) return "N/A"; // If CGPA is not a number or invalid
 
-    // Check for 'F' or 'Absent' grades
+    // Check for explicit 'F' or 'Absent' grades in course results
     const hasFailingGrade = courseResults.some(
       (course) =>
-        course.grade.toUpperCase() === "F" ||
-        course.grade.toUpperCase() === "ABSENT"
+        (typeof course.grade === "string" &&
+          course.grade.toUpperCase() === "F") ||
+        (typeof course.grade === "string" &&
+          course.grade.toUpperCase() === "ABSENT")
     );
 
     if (hasFailingGrade) {
-      return "Needs Improvement (Failing grade or Absent)";
+      return "Needs Improvement (Failing grade or Absent)"; // Override CGPA remark if failing grades exist
     }
 
+    // Determine remark based on CGPA thresholds
     if (cgpaValue >= 3.75) {
       return "Outstanding Performance";
     } else if (cgpaValue >= 3.5) {
@@ -123,27 +132,30 @@ const App = () => {
     }
   };
 
-  // Function to search for results
+  // Function to handle student result search
   const searchResults = async (e) => {
-    e.preventDefault();
-    if (!authReady || !userId) {
+    e.preventDefault(); // Prevent default form submission
+    if (!authReady) {
+      // Ensure Firebase auth is initialized before proceeding
       setError("Authentication not ready. Please wait.");
       return;
     }
-    setLoading(true);
-    setResults(null);
-    setError("");
+    setLoading(true); // Set loading state
+    setResults(null); // Clear previous results
+    setError(""); // Clear previous errors
 
     if (!studentIdInput.trim()) {
+      // Validate input
       setError("Please enter a Student ID.");
       setLoading(false);
       return;
     }
 
     try {
+      // Query Firestore for student data
       const publicResultsCollectionRef = collection(
         db,
-        `artifacts/${appId}/public/data/universityResults`
+        `artifacts/${currentAppId}/public/data/universityResults`
       );
       const q = query(
         publicResultsCollectionRef,
@@ -152,12 +164,13 @@ const App = () => {
       const querySnapshot = await getDocs(q);
 
       if (!querySnapshot.empty) {
-        querySnapshot.forEach((doc) => {
-          const studentData = doc.data();
-          // Dynamically generate remarks based on CGPA and course grades
+        // If results found, process and display the first matching document
+        querySnapshot.forEach((document) => {
+          const studentData = document.data();
+          // Generate dynamic remarks based on fetched CGPA and course grades
           studentData.dynamicRemarks = getRemarksByCGPA(
             studentData.cgpa,
-            studentData.courseResults
+            studentData.courseResults || []
           );
           setResults(studentData);
         });
@@ -168,11 +181,11 @@ const App = () => {
       console.error("Error fetching documents: ", e);
       setError("Error fetching results. Please try again later. " + e.message);
     } finally {
-      setLoading(false);
+      setLoading(false); // Reset loading state
     }
   };
 
-  // --- CSV Import Functions ---
+  // --- CSV Import Functions (Admin Only) ---
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
       setSelectedFile(e.target.files[0]);
@@ -188,10 +201,11 @@ const App = () => {
     const headers = lines[0].split(",").map((header) => header.trim());
     const data = [];
 
-    console.log("CSV Headers (from file):", headers); // Log headers for debugging
+    console.log("CSV Headers (from file):", headers);
 
     for (let i = 1; i < lines.length; i++) {
       const values = lines[i].split(",").map((value) => value.trim());
+      // Skip malformed rows where number of values doesn't match headers
       if (values.length !== headers.length) {
         console.warn(
           `Skipping malformed row (header/value count mismatch): ${lines[i]}`
@@ -207,6 +221,7 @@ const App = () => {
         const value = values[index];
         const normalizedHeader = header.replace(/\s+/g, "").toLowerCase();
 
+        // Map common student info headers
         if (normalizedHeader.includes("studentid")) {
           studentData.studentId = value;
         } else if (normalizedHeader === "name") {
@@ -216,25 +231,23 @@ const App = () => {
         } else if (normalizedHeader === "session") {
           studentData.session = value;
         } else if (normalizedHeader === "batch") {
-          // Capture batch from CSV
           studentData.batch = value;
         } else if (normalizedHeader === "cgpa") {
           studentData.cgpa = value;
         } else if (normalizedHeader === "remarks") {
           studentData.remarks = value;
         } else {
-          // Assume any other header is a course code, and its value is the grade
+          // Treat any other header as a course code with its value as the grade
           if (value && value.trim() !== "") {
-            // Only add if there's a grade value
             studentData.courseResults.push({
-              courseCode: header, // Use the header as the course code
-              grade: value, // The value under the header is the grade
+              courseCode: header,
+              grade: value,
             });
           }
         }
       });
 
-      // Ensure studentId is present before pushing
+      // Only include student data if a student ID was successfully parsed
       if (studentData.studentId) {
         data.push(studentData);
       } else {
@@ -244,13 +257,14 @@ const App = () => {
         );
       }
     }
-    console.log("Parsed CSV Data (before Firestore):", data); // Log parsed data
+    console.log("Parsed CSV Data (before Firestore):", data);
     return data;
   };
 
   const uploadCsvFileToFirestore = async () => {
-    if (!authReady || !userId) {
-      setError("Authentication not ready. Please wait.");
+    // Ensure admin is logged in before allowing file upload
+    if (!authReady || !isAdmin) {
+      setError("Unauthorized access. Please log in as admin.");
       return;
     }
     setLoading(true);
@@ -270,8 +284,8 @@ const App = () => {
 
     try {
       const reader = new FileReader();
-      reader.onload = async (e) => {
-        const csvString = e.target.result;
+      reader.onload = async (event) => {
+        const csvString = event.target.result;
         const parsedData = parseCsvData(csvString);
 
         if (parsedData.length === 0) {
@@ -284,7 +298,7 @@ const App = () => {
 
         const publicResultsCollectionRef = collection(
           db,
-          `artifacts/${appId}/public/data/universityResults`
+          `artifacts/${currentAppId}/public/data/universityResults`
         );
 
         for (const student of parsedData) {
@@ -296,17 +310,20 @@ const App = () => {
             continue;
           }
 
-          const docRef = doc(publicResultsCollectionRef, student.studentId);
+          const docReference = doc(
+            publicResultsCollectionRef,
+            student.studentId
+          );
           await setDoc(
-            docRef,
+            docReference,
             {
               studentId: student.studentId,
               name: student.name || "",
               department: student.department || "",
               session: student.session || "",
-              batch: student.batch || "", // Store batch from CSV
+              batch: student.batch || "",
               cgpa: student.cgpa || "",
-              remarks: student.remarks || "", // Keep original remarks from CSV if exists
+              remarks: student.remarks || "",
               courseResults:
                 student.courseResults.map((course) => ({
                   courseCode: course.courseCode,
@@ -334,7 +351,7 @@ const App = () => {
     }
   };
 
-  // --- Manual Add Functions ---
+  // --- Manual Add Functions (Admin Only) ---
   const handleManualInputChange = (e) => {
     const { name, value } = e.target;
     setManualStudentData((prev) => ({ ...prev, [name]: value }));
@@ -366,8 +383,9 @@ const App = () => {
   };
 
   const addManualStudentToFirestore = async () => {
-    if (!authReady || !userId) {
-      setError("Authentication not ready. Please wait.");
+    // Ensure admin is logged in before allowing manual data entry
+    if (!authReady || !isAdmin) {
+      setError("Unauthorized access. Please log in as admin.");
       return;
     }
     setLoading(true);
@@ -382,38 +400,42 @@ const App = () => {
     try {
       const publicResultsCollectionRef = collection(
         db,
-        `artifacts/${appId}/public/data/universityResults`
+        `artifacts/${currentAppId}/public/data/universityResults`
       );
-      const docRef = doc(
+      const docReference = doc(
         publicResultsCollectionRef,
         manualStudentData.studentId.trim()
       );
       await setDoc(
-        docRef,
+        docReference,
         {
           studentId: manualStudentData.studentId.trim(),
           name: manualStudentData.name.trim(),
           department: manualStudentData.department.trim(),
           session: manualStudentData.session.trim(),
-          batch: manualStudentData.batch || "", // Include batch for manual entry if desired
+          batch: manualStudentData.batch.trim() || "",
           cgpa: manualStudentData.cgpa.trim(),
+          remarks: manualStudentData.remarks?.trim() || "",
           courseResults: manualStudentData.courseResults
-            .filter((c) => c.courseCode.trim() && c.grade.trim())
+            .filter((course) => course.courseCode.trim() && course.grade.trim())
             .map((course) => ({
-              courseCode: course.courseCode.trim(), // Ensure trimming here
-              grade: course.grade.trim(), // Ensure trimming here
+              courseCode: course.courseCode.trim(),
+              grade: course.grade.trim(),
             })),
         },
         { merge: true }
       );
 
       setShowManualAddModal(false);
+      // Reset form fields after successful submission
       setManualStudentData({
         studentId: "",
         name: "",
         department: "",
         session: "",
+        batch: "",
         cgpa: "",
+        remarks: "",
         courseResults: [{ courseCode: "", grade: "" }],
       });
       alertUser("Student data added/updated successfully!", "success");
@@ -426,7 +448,78 @@ const App = () => {
     }
   };
 
-  // Custom alert message box instead of window.alert
+  // --- Admin Login/Logout Functions ---
+  const handleAdminLogin = async (e) => {
+    e.preventDefault();
+    setLoginError("");
+    setLoading(true);
+    try {
+      // Sign out any currently authenticated user (e.g., anonymous) before trying admin login
+      if (auth.currentUser) {
+        await signOut(auth);
+      }
+      // Attempt to sign in with provided email and password
+      const userCredential = await signInWithEmailAndPassword(
+        auth,
+        adminEmail,
+        adminPassword
+      );
+
+      // If login is successful and the email matches the designated ADMIN_EMAIL
+      if (userCredential.user && userCredential.user.email === ADMIN_EMAIL) {
+        setIsAdmin(true);
+        setShowAdminLoginModal(false);
+        alertUser("Admin logged in successfully!", "success");
+      } else {
+        // If login successful but email doesn't match ADMIN_EMAIL (shouldn't happen with correct setup)
+        setLoginError("Invalid admin credentials.");
+        await signOut(auth);
+        await signInAnonymously(auth);
+        setIsAdmin(false);
+      }
+    } catch (error) {
+      console.error("Admin login error:", error);
+      // Display user-friendly error message based on Firebase error codes
+      if (
+        error.code === "auth/wrong-password" ||
+        error.code === "auth/user-not-found"
+      ) {
+        setLoginError("Incorrect email or password.");
+      } else if (error.code === "auth/invalid-email") {
+        setLoginError("Invalid email format.");
+      } else {
+        setLoginError("Login failed. Please try again.");
+      }
+      // Ensure anonymous sign-in is attempted if admin login fails
+      try {
+        await signOut(auth);
+        await signInAnonymously(auth);
+      } catch (anonError) {
+        console.error("Failed to re-authenticate anonymously:", anonError);
+      }
+      setIsAdmin(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAdminLogout = async () => {
+    setLoading(true);
+    try {
+      await signOut(auth);
+      setIsAdmin(false);
+      alertUser("Logged out successfully!", "info");
+      // Immediately sign in anonymously after logout to restore public access
+      await signInAnonymously(auth);
+    } catch (error) {
+      console.error("Logout error:", error);
+      alertUser("Logout failed.", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- Custom Alert Message Box ---
   const [messageBox, setMessageBox] = useState({
     visible: false,
     message: "",
@@ -435,17 +528,18 @@ const App = () => {
 
   const alertUser = (message, type = "info") => {
     setMessageBox({ visible: true, message, type });
+    // Hide the message after 3 seconds
     setTimeout(() => {
       setMessageBox({ visible: false, message: "", type: "" });
-    }, 3000); // Hide after 3 seconds
+    }, 3000);
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-600 to-indigo-800 font-inter text-white flex flex-col items-center justify-center p-4">
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      {/* Tailwind CSS Script - Included directly for consistent loading */}
+      {/* Tailwind CSS Script - Ensures styles are loaded */}
       <script src="https://cdn.tailwindcss.com"></script>
-      {/* Font for Inter - Included directly for consistent loading */}
+      {/* Font for Inter - Ensures font is loaded */}
       <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
         rel="stylesheet"
@@ -477,8 +571,8 @@ const App = () => {
             box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
         }
         .loader {
-          border: 4px solid #f3f3f3; /* Light grey */
-          border-top: 4px solid #3498db; /* Blue */
+          border: 4px solid #f3f3f3; 
+          border-top: 4px solid #3498db; 
           border-radius: 50%;
           width: 20px;
           height: 20px;
@@ -488,14 +582,13 @@ const App = () => {
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
         }
-        /* Added text-shadow for better readability on headings */
         .text-shadow-light {
             text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
         }
         `}
       </style>
 
-      {/* Custom Message Box */}
+      {/* Custom Message Box Display */}
       {messageBox.visible && (
         <div
           className={`fixed top-4 left-1/2 -translate-x-1/2 p-4 rounded-lg shadow-xl text-center z-50 animate-fade-in
@@ -540,7 +633,7 @@ const App = () => {
             type="text"
             id="studentId"
             className="flex-grow p-3 rounded-lg bg-white bg-opacity-20 border border-blue-300 border-opacity-50 text-white placeholder-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-300 transition duration-300"
-            placeholder="Enter the 10 digits" // Changed placeholder text
+            placeholder="Enter the 10 digits"
             value={studentIdInput}
             onChange={(e) => setStudentIdInput(e.target.value)}
             required
@@ -562,25 +655,110 @@ const App = () => {
         )}
       </form>
 
-      {/* Data Management Buttons (Conditionally Rendered for Admin) */}
-      {isAdmin /* Only show these buttons if isAdmin is true */ && (
-        <div className="flex flex-wrap justify-center gap-4 mb-8 w-full max-w-lg">
+      {/* Admin Panel Access / Management Buttons */}
+      <div className="flex flex-wrap justify-center gap-4 mb-8 w-full max-w-lg">
+        {isAdmin ? ( // If isAdmin is true, show admin management buttons and logout
+          <>
+            <button
+              onClick={() => setShowImportCSVModal(true)}
+              className="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-300"
+            >
+              Import CSV Data
+            </button>
+            <button
+              onClick={() => setShowManualAddModal(true)}
+              className="bg-orange-600 hover:bg-orange-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-orange-300"
+            >
+              Manually Add Student
+            </button>
+            <button
+              onClick={handleAdminLogout}
+              className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-300"
+            >
+              Logout Admin
+            </button>
+          </>
+        ) : (
+          // If not admin, show Admin Login button
           <button
-            onClick={() => setShowImportCSVModal(true)}
-            className="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-300"
+            onClick={() => setShowAdminLoginModal(true)}
+            className="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-purple-300"
           >
-            Import CSV Data
+            Admin Login
           </button>
-          <button
-            onClick={() => setShowManualAddModal(true)}
-            className="bg-orange-600 hover:bg-orange-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-orange-300"
+        )}
+      </div>
+
+      {/* Admin Login Modal (Conditionally Rendered) */}
+      {showAdminLoginModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 animate-fade-in">
+          <form
+            onSubmit={handleAdminLogin}
+            className="bg-white text-gray-800 p-8 rounded-xl shadow-2xl max-w-sm w-full"
           >
-            Manually Add Student
-          </button>
+            <h3 className="text-2xl font-bold mb-4 text-center">Admin Login</h3>
+            <div className="mb-4">
+              <label
+                className="block text-gray-700 text-sm font-bold mb-2"
+                htmlFor="adminEmail"
+              >
+                Email:
+              </label>
+              <input
+                type="email"
+                id="adminEmail"
+                value={adminEmail}
+                onChange={(e) => setAdminEmail(e.target.value)}
+                className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                required
+              />
+            </div>
+            <div className="mb-6">
+              <label
+                className="block text-gray-700 text-sm font-bold mb-2"
+                htmlFor="adminPassword"
+              >
+                Password:
+              </label>
+              <input
+                type="password"
+                id="adminPassword"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 mb-3 leading-tight focus:outline-none focus:shadow-outline"
+                required
+              />
+            </div>
+            {loginError && (
+              <p className="text-red-500 text-sm italic mb-4 text-center">
+                {loginError}
+              </p>
+            )}
+            <div className="flex items-center justify-between">
+              <button
+                type="submit"
+                className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline"
+                disabled={loading}
+              >
+                {loading ? "Logging in..." : "Login"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAdminLoginModal(false);
+                  setLoginError("");
+                }} // Clear error on cancel
+                className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline"
+                disabled={loading}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
-      {/* Import CSV Modal (Conditionally Rendered based on showImportCSVModal) */}
+      {/* Import CSV Modal (Conditionally Rendered) */}
       {showImportCSVModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white text-gray-800 p-8 rounded-xl shadow-2xl max-w-2xl w-full">
@@ -599,7 +777,7 @@ const App = () => {
             <input
               type="file"
               accept=".csv"
-              ref={fileInputRef} // Assign ref to the file input
+              ref={fileInputRef}
               onChange={handleFileChange}
               className="w-full p-3 mb-4 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
@@ -622,6 +800,7 @@ const App = () => {
                 )}
               </button>
               <button
+                type="button" // Important: set type="button" to prevent form submission
                 onClick={() => {
                   setShowImportCSVModal(false);
                   setSelectedFile(null);
@@ -641,7 +820,7 @@ const App = () => {
         </div>
       )}
 
-      {/* Manual Add Student Modal (Conditionally Rendered based on showManualAddModal) */}
+      {/* Manual Add Student Modal (Conditionally Rendered) */}
       {showManualAddModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 animate-fade-in overflow-y-auto">
           <div className="bg-white text-gray-800 p-8 rounded-xl shadow-2xl max-w-2xl w-full my-8">
@@ -731,7 +910,6 @@ const App = () => {
                   onChange={handleManualInputChange}
                 />
               </div>
-              {/* Added Batch input field */}
               <div>
                 <label
                   className="block text-gray-700 text-sm font-bold mb-2"
@@ -744,7 +922,7 @@ const App = () => {
                   id="manualBatch"
                   name="batch"
                   className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
-                  value={manualStudentData.batch || ""} // Use || '' to handle undefined
+                  value={manualStudentData.batch || ""}
                   onChange={handleManualInputChange}
                 />
               </div>
@@ -805,6 +983,7 @@ const App = () => {
 
             <div className="flex justify-center space-x-4">
               <button
+                type="submit"
                 onClick={addManualStudentToFirestore}
                 className="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-5 rounded-lg shadow-md transition duration-300"
                 disabled={loading}
@@ -816,6 +995,7 @@ const App = () => {
                 )}
               </button>
               <button
+                type="button"
                 onClick={() => {
                   setShowManualAddModal(false);
                   setError("");
@@ -840,9 +1020,8 @@ const App = () => {
             Result for {results.name}
           </h2>
 
-          {/* Improved Alignment for Student Info */}
+          {/* Student Info Display Grid */}
           <div className="grid grid-cols-2 gap-x-8 gap-y-3 mb-6 text-lg">
-            {/* Each item explicitly defines its span */}
             <div className="col-span-1">
               <p>
                 <span className="font-semibold text-blue-200">Student ID:</span>{" "}
@@ -868,16 +1047,12 @@ const App = () => {
               </p>
             </div>
             <div className="col-span-2">
-              {" "}
-              {/* CGPA takes full width on smaller screens, half on larger */}
               <p>
                 <span className="font-semibold text-blue-200">CGPA:</span>{" "}
                 {results.cgpa}
               </p>
             </div>
             <div className="col-span-2">
-              {" "}
-              {/* Remarks takes full width */}
               <p>
                 <span className="font-semibold text-blue-200">Remarks:</span>{" "}
                 {results.dynamicRemarks}
@@ -925,7 +1100,7 @@ const App = () => {
         </div>
       )}
 
-      {/* Current User ID (for debugging/reference) */}
+      {/* Current User ID / Debugging Info */}
       {userId && (
         <div className="absolute bottom-4 right-4 text-xs text-blue-200 bg-white bg-opacity-10 p-2 rounded-lg">
           Your User ID: <span className="font-mono">{userId}</span>
