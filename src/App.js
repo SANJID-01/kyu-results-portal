@@ -78,12 +78,11 @@ const App = () => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         setUserId(user.uid);
-        // Set isAdmin based on user.email only if user.email is available
-        setIsAdmin(user.email ? user.email === ADMIN_EMAIL : false);
+        // Set isAdmin based on user.email
+        setIsAdmin(user.email === ADMIN_EMAIL);
       } else {
-        // If no user, try to sign in anonymously if not already signed in
+        // If no user is authenticated, ensure an anonymous session is active for public search
         if (!auth.currentUser) {
-          // Check if there's no current user at all
           try {
             await signInAnonymously(auth);
             setUserId(auth.currentUser?.uid || null);
@@ -96,8 +95,8 @@ const App = () => {
             setError("Failed to initialize authentication. Please try again.");
           }
         } else {
-          // There is a user, but it's not the one we want (e.g., just logged out)
-          setUserId(null);
+          // This might be a user who just logged out, or an anonymous user
+          setUserId(null); // Clear userId if no user is signed in
           setIsAdmin(false);
         }
       }
@@ -459,32 +458,35 @@ const App = () => {
     setLoginError("");
     setLoading(true);
     try {
-      // Sign out any currently authenticated user (e.g., anonymous) before trying admin login
+      // Step 1: Sign out current user (anonymous or previous admin session) to ensure a clean slate
       if (auth.currentUser) {
         await signOut(auth);
       }
-      // Attempt to sign in with provided email and password
+
+      // Step 2: Attempt to sign in with provided admin email and password
       const userCredential = await signInWithEmailAndPassword(
         auth,
         adminEmail,
         adminPassword
       );
 
-      // If login is successful and the email matches the designated ADMIN_EMAIL
+      // Step 3: Verify the logged-in user is the designated admin
       if (userCredential.user && userCredential.user.email === ADMIN_EMAIL) {
+        // Successful admin login
         setIsAdmin(true);
         setShowAdminLoginModal(false);
         alertUser("Admin logged in successfully!", "success");
       } else {
-        // If login successful but email doesn't match ADMIN_EMAIL (shouldn't happen with correct setup)
+        // This case handles a valid Firebase login but not with the specific ADMIN_EMAIL
+        // (Should ideally not happen if ADMIN_EMAIL is correct and only that user exists)
         setLoginError("Invalid admin credentials.");
-        // Do NOT automatically sign out here if it's just an email mismatch after a successful Firebase login.
-        // Let the subsequent anonymous sign-in handle the public view.
+        await signOut(auth); // Sign out if not the intended admin
+        await signInAnonymously(auth); // Revert to anonymous for public view
         setIsAdmin(false);
       }
     } catch (error) {
       console.error("Admin login error:", error);
-      // Display user-friendly error message based on Firebase error codes
+      // Provide user-friendly error messages
       if (
         error.code === "auth/wrong-password" ||
         error.code === "auth/user-not-found"
@@ -495,12 +497,15 @@ const App = () => {
       } else {
         setLoginError("Login failed. Please try again.");
       }
-      // Ensure anonymous sign-in is attempted if admin login fails
+      // Ensure anonymous sign-in is always attempted if admin login fails
       try {
-        await signOut(auth); // Sign out any partial or failed auth attempt
+        await signOut(auth); // Clear any partial authentication state
         await signInAnonymously(auth); // Re-authenticate anonymously for public view
       } catch (anonError) {
-        console.error("Failed to re-authenticate anonymously:", anonError);
+        console.error(
+          "Failed to re-authenticate anonymously after failed admin login:",
+          anonError
+        );
       }
       setIsAdmin(false);
     } finally {
@@ -511,10 +516,10 @@ const App = () => {
   const handleAdminLogout = async () => {
     setLoading(true);
     try {
-      await signOut(auth);
-      setIsAdmin(false);
+      await signOut(auth); // Sign out the current user (admin)
+      setIsAdmin(false); // Revoke admin status
       alertUser("Logged out successfully!", "info");
-      // Immediately sign in anonymously after logout to restore public access
+      // Immediately sign in anonymously after logout to restore public access for search
       await signInAnonymously(auth);
     } catch (error) {
       console.error("Logout error:", error);
