@@ -73,17 +73,34 @@ const App = () => {
     courseResults: [{ courseCode: "", grade: "" }],
   });
 
+  // Flag to manage auth state changes during explicit login/logout
+  // This helps prevent automatic anonymous sign-in from immediately overriding
+  const isHandlingAuthTransition = useRef(false);
+
   // Effect for Firebase Authentication State Changes
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       console.log("Firebase Auth Debug: onAuthStateChanged fired. User:", user);
+
+      // If we are currently in the process of logging in or out, defer detailed state update
+      // This prevents the anonymous auto-signin from flipping isAdmin too quickly
+      if (isHandlingAuthTransition.current) {
+        console.log(
+          "Firebase Auth Debug: Skipping onAuthStateChanged due to ongoing auth transition."
+        );
+        // Only set authReady once transition is done or user is truly determined
+        setAuthReady(false); // Keep authReady false until a stable state is reached
+        return;
+      }
+
       if (user) {
         setUserId(user.uid);
-        // Only set isAdmin to true if user has an email and is NOT anonymous AND their email matches ADMIN_EMAIL
+        const userEmailTrimmed = user.email ? user.email.trim() : "";
+        const adminEmailTrimmed = ADMIN_EMAIL.trim();
         const userIsAdmin =
           user.email &&
           !user.isAnonymous &&
-          user.email.trim() === ADMIN_EMAIL.trim();
+          userEmailTrimmed === adminEmailTrimmed;
         setIsAdmin(userIsAdmin);
         console.log(
           "Firebase Auth Debug: User email (trimmed):",
@@ -93,29 +110,45 @@ const App = () => {
           "Is Admin:",
           userIsAdmin,
           "Expected ADMIN_EMAIL (trimmed):",
-          ADMIN_EMAIL.trim()
+          adminEmailTrimmed
         );
       } else {
-        // If no user object, ensure userId is null and isAdmin is false.
-        // Anonymous sign-in will be handled by the initialAuthCheck or explicit logout.
+        // If user is null (signed out state), ensure consistent state and try anonymous sign-in IF needed
         setUserId(null);
         setIsAdmin(false);
         console.log(
           "Firebase Auth Debug: No user authenticated, isAdmin set to false."
         );
+
+        // Explicitly try anonymous sign-in if no user is currently authenticated to maintain public access
+        if (!auth.currentUser) {
+          try {
+            await signInAnonymously(auth);
+            console.log(
+              "Firebase Auth Debug: Signed in anonymously as no authenticated user found after state change."
+            );
+          } catch (authError) {
+            console.error(
+              "Firebase anonymous authentication error during onAuthStateChanged:",
+              authError
+            );
+            // Optionally set an error visible to the user if anonymous sign-in fails
+          }
+        }
       }
-      setAuthReady(true); // Indicate that the initial authentication state has been determined
+      setAuthReady(true); // Authentication state has been determined
     });
 
-    // Handle initial anonymous sign-in only IF no user is currently authenticated on component mount.
-    // This runs once after the component mounts, ensuring a public session if none exists.
-    const initialAnonymousSignIn = async () => {
-      // Use auth.currentUser === null specifically to check if no user is signed in yet
-      if (auth.currentUser === null) {
+    // Initial anonymous sign-in on component mount (if no user found yet)
+    // This runs once at the very beginning to establish a public session.
+    const ensureInitialPublicAccess = async () => {
+      if (!auth.currentUser) {
+        // Check if no user is signed in yet
+        isHandlingAuthTransition.current = true; // Flag to prevent onAuthStateChanged from reacting too soon
         try {
           await signInAnonymously(auth);
           console.log(
-            "Firebase Auth Debug: Initial anonymous sign-in attempt on component load."
+            "Firebase Auth Debug: Initial anonymous sign-in attempt on component mount."
           );
         } catch (authError) {
           console.error(
@@ -125,13 +158,17 @@ const App = () => {
           setError(
             "Failed to initialize authentication on load. Please refresh."
           );
+        } finally {
+          isHandlingAuthTransition.current = false; // Reset flag
+          setAuthReady(true); // Auth is ready after this initial check
         }
+      } else {
+        setAuthReady(true); // If already signed in (e.g., from a previous session), auth is ready
       }
     };
-    // Call the initial anonymous sign-in function
-    initialAnonymousSignIn();
+    ensureInitialPublicAccess();
 
-    return () => unsubscribe();
+    return () => unsubscribe(); // Cleanup subscription on component unmount
   }, []); // Empty dependency array means this effect runs once on component mount
 
   // Function to determine remarks based on CGPA and grades
@@ -475,7 +512,7 @@ const App = () => {
       alertUser("Student data added/updated successfully!", "success");
     } catch (e) {
       console.error("Error adding manual student data: ", e);
-      setError("Failed to add student data: " + e.message);
+      setError("Failed to add data: " + e.message);
       alertUser("Failed to add data: " + e.message, "error"); // Updated alert
     } finally {
       setLoading(false);
@@ -489,10 +526,11 @@ const App = () => {
     setLoading(true);
     try {
       // Step 1: Ensure any previous user is signed out completely
+      // This is crucial for ensuring a clean state before attempting a new login
       if (auth.currentUser) {
         await signOut(auth);
         console.log(
-          "Firebase Auth Debug: Signed out current user before admin login attempt."
+          "Firebase Auth Debug: Signed out current user for clean admin login."
         );
       }
 
@@ -507,28 +545,10 @@ const App = () => {
         userCredential.user?.email
       );
 
-      // Step 3: Verify the logged-in user is the designated admin
-      if (
-        userCredential.user &&
-        userCredential.user.email &&
-        userCredential.user.email.trim() === ADMIN_EMAIL.trim()
-      ) {
-        setIsAdmin(true);
-        setShowAdminLoginModal(false);
-        alertUser("Admin logged in successfully!", "success");
-        console.log("Firebase Auth Debug: isAdmin set to true.");
-      } else {
-        console.warn(
-          "Firebase Auth Debug: Logged in user email does not match ADMIN_EMAIL. Reverting to anonymous."
-        );
-        setLoginError("Invalid admin credentials.");
-        await signOut(auth); // Sign out the user that just logged in (who isn't our admin)
-        await signInAnonymously(auth); // Immediately sign in anonymously for public view
-        setIsAdmin(false);
-      }
+      // onAuthStateChanged listener will handle updating isAdmin based on userCredential.user
+      // No need to explicitly set isAdmin here, as onAuthStateChanged will be triggered.
     } catch (error) {
       console.error("Admin login error:", error);
-      // More specific error messages for the user
       if (
         error.code === "auth/wrong-password" ||
         error.code === "auth/user-not-found"
@@ -563,15 +583,12 @@ const App = () => {
     setLoading(true);
     try {
       console.log("Firebase Auth Debug: Attempting logout.");
-      await signOut(auth);
-      setIsAdmin(false);
-      alertUser("Logged out successfully!", "info");
+      await signOut(auth); // This will trigger onAuthStateChanged with user=null
       console.log(
-        "Firebase Auth Debug: Signed out. Attempting anonymous sign-in for public access."
+        "Firebase Auth Debug: Signed out. AuthStateChanged will handle next state."
       );
-      // Immediately sign in anonymously after logout to restore public access
-      await signInAnonymously(auth);
-      console.log("Firebase Auth Debug: Signed in anonymously after logout.");
+      // onAuthStateChanged will then detect user=null and sign in anonymously if no user found.
+      // So no need to call signInAnonymously explicitly here.
     } catch (error) {
       console.error("Logout error:", error);
       alertUser("Logout failed.", "error");
