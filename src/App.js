@@ -75,52 +75,64 @@ const App = () => {
 
   // Effect for Firebase Authentication State Changes
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       console.log("Firebase Auth Debug: onAuthStateChanged fired. User:", user);
       if (user) {
         setUserId(user.uid);
-        // ONLY set isAdmin to true if user has an email and it matches ADMIN_EMAIL
-        // This explicitly excludes anonymous users who do not have an email property.
+        // Only set isAdmin to true if user has an email and is NOT anonymous AND their email matches ADMIN_EMAIL
         const userIsAdmin =
-          user.email && user.email.trim() === ADMIN_EMAIL.trim();
+          user.email &&
+          !user.isAnonymous &&
+          user.email.trim() === ADMIN_EMAIL.trim();
         setIsAdmin(userIsAdmin);
         console.log(
           "Firebase Auth Debug: User email (trimmed):",
           user.email ? user.email.trim() : "N/A",
+          "Is Anonymous:",
+          user.isAnonymous,
           "Is Admin:",
           userIsAdmin,
           "Expected ADMIN_EMAIL (trimmed):",
           ADMIN_EMAIL.trim()
         );
       } else {
-        // If no user is authenticated AND no anonymous user is currently active
-        // then sign in anonymously. This prevents overriding explicit logins.
-        if (!auth.currentUser) {
-          try {
-            await signInAnonymously(auth);
-            setUserId(auth.currentUser?.uid || null);
-            setIsAdmin(false);
-            console.log(
-              "Firebase Auth Debug: Signed in anonymously as no active user found."
-            );
-          } catch (authError) {
-            console.error(
-              "Firebase anonymous authentication error:",
-              authError
-            );
-            setError("Failed to initialize authentication. Please try again.");
-          }
-        } else {
-          // This means there's an anonymous user active after logout, or initial load.
-          setUserId(null); // Clear userId if no user is signed in
-          setIsAdmin(false);
-        }
+        // If no user object, ensure userId is null and isAdmin is false.
+        // Anonymous sign-in will be handled by the initialAuthCheck or explicit logout.
+        setUserId(null);
+        setIsAdmin(false);
+        console.log(
+          "Firebase Auth Debug: No user authenticated, isAdmin set to false."
+        );
       }
-      setAuthReady(true);
+      setAuthReady(true); // Indicate that the initial authentication state has been determined
     });
 
+    // Handle initial anonymous sign-in only IF no user is currently authenticated on component mount.
+    // This runs once after the component mounts, ensuring a public session if none exists.
+    const initialAnonymousSignIn = async () => {
+      // Use auth.currentUser === null specifically to check if no user is signed in yet
+      if (auth.currentUser === null) {
+        try {
+          await signInAnonymously(auth);
+          console.log(
+            "Firebase Auth Debug: Initial anonymous sign-in attempt on component load."
+          );
+        } catch (authError) {
+          console.error(
+            "Firebase initial anonymous authentication error:",
+            authError
+          );
+          setError(
+            "Failed to initialize authentication on load. Please refresh."
+          );
+        }
+      }
+    };
+    // Call the initial anonymous sign-in function
+    initialAnonymousSignIn();
+
     return () => unsubscribe();
-  }, []);
+  }, []); // Empty dependency array means this effect runs once on component mount
 
   // Function to determine remarks based on CGPA and grades
   const getRemarksByCGPA = (cgpa, courseResults) => {
