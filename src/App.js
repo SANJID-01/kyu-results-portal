@@ -79,9 +79,8 @@ const App = () => {
       console.log("Firebase Auth Debug: onAuthStateChanged fired. User:", user);
       if (user) {
         setUserId(user.uid);
-        // Trim user.email to remove any hidden whitespace before comparison
         const userEmailTrimmed = user.email ? user.email.trim() : "";
-        const adminEmailTrimmed = ADMIN_EMAIL.trim(); // Trim ADMIN_EMAIL as well
+        const adminEmailTrimmed = ADMIN_EMAIL.trim();
         const userIsAdmin = userEmailTrimmed === adminEmailTrimmed;
         setIsAdmin(userIsAdmin);
         console.log(
@@ -93,24 +92,27 @@ const App = () => {
           adminEmailTrimmed
         );
       } else {
-        // If no user is authenticated, ensure an anonymous session is active for public search
-        try {
-          if (auth.currentUser) {
-            await signOut(auth);
+        // Only sign in anonymously if there is absolutely NO user authenticated.
+        // This prevents anonymous sign-in from overriding an existing email/password session.
+        if (!auth.currentUser) {
+          try {
+            await signInAnonymously(auth);
+            setUserId(auth.currentUser?.uid || null);
+            setIsAdmin(false);
             console.log(
-              "Firebase Auth Debug: Signed out current user before anonymous sign-in."
+              "Firebase Auth Debug: Signed in anonymously after no user found."
             );
+          } catch (authError) {
+            console.error(
+              "Firebase anonymous authentication error:",
+              authError
+            );
+            setError("Failed to initialize authentication. Please try again.");
           }
-          await signInAnonymously(auth);
-          setUserId(auth.currentUser?.uid || null);
+        } else {
+          // User might have just logged out, or it's an anonymous session
+          setUserId(null);
           setIsAdmin(false);
-          console.log(
-            "Firebase Auth Debug: Signed in anonymously. User ID:",
-            auth.currentUser?.uid
-          );
-        } catch (authError) {
-          console.error("Firebase anonymous authentication error:", authError);
-          setError("Failed to initialize authentication. Please try again.");
         }
       }
       setAuthReady(true);
@@ -334,7 +336,6 @@ const App = () => {
           await setDoc(
             docReference,
             {
-              // Corrected setSetDoc to setDoc
               studentId: student.studentId,
               name: student.name || "",
               department: student.department || "",
@@ -505,8 +506,7 @@ const App = () => {
           "Firebase Auth Debug: Logged in user email does not match ADMIN_EMAIL."
         );
         setLoginError("Invalid admin credentials.");
-        // Ensure anonymous sign-in is attempted if email mismatch occurs
-        await signOut(auth); // Sign out the non-admin user
+        await signOut(auth); // Sign out the non-admin user immediately
         await signInAnonymously(auth); // Revert to anonymous for public view
         setIsAdmin(false);
       }
@@ -527,7 +527,10 @@ const App = () => {
       }
       // Ensure anonymous sign-in is attempted if admin login fails
       try {
-        await signOut(auth);
+        if (auth.currentUser) {
+          // Only signOut if there's actually a user
+          await signOut(auth);
+        }
         await signInAnonymously(auth);
       } catch (anonError) {
         console.error(
