@@ -14,7 +14,7 @@ import {
   where,
   getDocs,
   doc,
-  setDoc, // Corrected to just setDoc
+  setDoc,
 } from "firebase/firestore";
 
 // IMPORTANT: Paste YOUR ACTUAL Firebase project config JSON here.
@@ -38,7 +38,7 @@ const db = getFirestore(app);
 const currentAppId = firebaseConfig.projectId;
 
 // IMPORTANT: REPLACE THIS WITH THE EXACT EMAIL OF YOUR ADMIN USER CREATED IN FIREBASE AUTHENTICATION
-const ADMIN_EMAIL = "sanjid.cse16@gmail.com"; // <-- !! REPLACE THIS EMAIL !!
+const ADMIN_EMAIL = "sanjid.cse16@gmail.com"; // <-- Ensure this is ABSOLUTELY correct!
 
 // Main App Component
 const App = () => {
@@ -79,23 +79,27 @@ const App = () => {
       console.log("Firebase Auth Debug: onAuthStateChanged fired. User:", user);
       if (user) {
         setUserId(user.uid);
-        const userIsAdmin = user.email === ADMIN_EMAIL;
+        // Trim user.email to remove any hidden whitespace before comparison
+        const userEmailTrimmed = user.email ? user.email.trim() : "";
+        const adminEmailTrimmed = ADMIN_EMAIL.trim(); // Trim ADMIN_EMAIL as well
+        const userIsAdmin = userEmailTrimmed === adminEmailTrimmed;
         setIsAdmin(userIsAdmin);
         console.log(
-          "Firebase Auth Debug: User email:",
-          user.email,
+          "Firebase Auth Debug: User email (trimmed):",
+          userEmailTrimmed,
           "Is Admin:",
           userIsAdmin,
-          "Expected ADMIN_EMAIL:",
-          ADMIN_EMAIL
+          "Expected ADMIN_EMAIL (trimmed):",
+          adminEmailTrimmed
         );
       } else {
         // If no user is authenticated, ensure an anonymous session is active for public search
-        // Also, explicitly sign out if there's any previous lingering session
         try {
           if (auth.currentUser) {
-            await signOut(auth); // Ensure a clean sign out
-            console.log("Firebase Auth Debug: Signed out previous user.");
+            await signOut(auth);
+            console.log(
+              "Firebase Auth Debug: Signed out current user before anonymous sign-in."
+            );
           }
           await signInAnonymously(auth);
           setUserId(auth.currentUser?.uid || null);
@@ -519,7 +523,7 @@ const App = () => {
       } else {
         setLoginError(
           "Login failed. Please try again. Error: " + error.message
-        ); // Show actual message for unknown errors
+        );
       }
       // Ensure anonymous sign-in is attempted if admin login fails
       try {
